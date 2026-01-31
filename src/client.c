@@ -1,38 +1,29 @@
+#define _XOPEN_SOURCE 700
 #include "../include/common.h"
+#include <unistd.h>
 
 int main(int argc, char *argv[]) {
   int sock = 0;
-  struct sockaddr_in serv_addr;
+  struct sockaddr_un serv_addr;
   char buffer[BUFFER_SIZE];
   char acc_buffer[4096]; // Accumulation buffer
   int acc_len = 0;
 
-  if (argc < 2) {
-    printf("Usage: %s <server_ip> [port]\n", argv[0]);
-  }
-
-  const char *server_ip = (argc > 1) ? argv[1] : "127.0.0.1";
-  int port = (argc > 2) ? atoi(argv[2]) : PORT;
-
-  if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+  if ((sock = socket(AF_UNIX, SOCK_STREAM, 0)) < 0) {
     printf("\n Socket creation error \n");
     return -1;
   }
 
-  serv_addr.sin_family = AF_INET;
-  serv_addr.sin_port = htons(port);
-
-  if (inet_pton(AF_INET, server_ip, &serv_addr.sin_addr) <= 0) {
-    printf("\nInvalid address/ Address not supported \n");
-    return -1;
-  }
+  memset(&serv_addr, 0, sizeof(serv_addr));
+  serv_addr.sun_family = AF_UNIX;
+  strncpy(serv_addr.sun_path, SOCKET_PATH, sizeof(serv_addr.sun_path) - 1);
 
   if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-    printf("\nConnection Failed \n");
+    perror("Connection Failed");
     return -1;
   }
 
-  printf("Connected to Mega Tic-Tac-Toe Server at %s:%d\n", server_ip, port);
+  printf("Connected to Mega Tic-Tac-Toe Server at %s\n", SOCKET_PATH);
   printf("Waiting for game to start...\n");
 
   memset(acc_buffer, 0, sizeof(acc_buffer));

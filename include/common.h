@@ -15,11 +15,12 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/un.h>
+#include <sys/wait.h>
 #include <time.h>
-#include <unistd.h>
 
 // --- Game Constants ---
-#define PORT 8888
+#define SOCKET_PATH "/tmp/mega_ttt.sock"
 #define MAX_PLAYERS 5
 #define MIN_PLAYERS 3
 #define BOARD_SIZE 12
@@ -29,8 +30,9 @@
 
 // --- Shared Memory & Semaphores Names ---
 #define SHM_NAME "/mega_ttt_shm"
-#define SEM_MUTEX_NAME "/mega_ttt_mutex"
+// #define SEM_MUTEX_NAME "/mega_ttt_mutex" // Removed: Using pthread_mutex
 #define SEM_TURN_NAME_PREFIX "/mega_ttt_turn_"
+#define SEM_SCHEDULER_NAME "/mega_ttt_scheduler"
 
 // --- Data Structures ---
 
@@ -43,6 +45,7 @@ typedef struct {
 } Player;
 
 typedef struct {
+  pthread_mutex_t game_mutex; // Process-Shared Mutex
   volatile char board[BOARD_SIZE][BOARD_SIZE];
   volatile int player_count;
   volatile int current_player_index; // 0 to player_count-1
