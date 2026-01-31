@@ -81,7 +81,11 @@ int main(int argc, char *argv[]) {
       } else {
         printf("\n--- GAME OVER: Player %d WINS! ---\n", winner_id);
       }
-      break;
+      // break; // Removed to support multi-game.
+      // Reset buffer for next game
+      memset(acc_buffer, 0, sizeof(acc_buffer));
+      acc_len = 0;
+      printf("Waiting for next game...\n");
     }
 
     if (invalid_ptr) {
