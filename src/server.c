@@ -635,6 +635,17 @@ int main(int argc, char *argv[]) {
       game_state->game_over = 0;
       pthread_mutex_unlock(&game_state->game_mutex);
 
+      printf("[Main] Draining semaphores to ensure clean state...\n");
+      // Drain Scheduler Semaphore
+      while (sem_trywait(sem_scheduler) == 0)
+        ;
+
+      // Drain Player Turn Semaphores
+      for (int i = 0; i < players_needed; i++) {
+        while (sem_trywait(turn_sems[i]) == 0)
+          ;
+      }
+
       printf("[Main] Game State Reset. Signaling Player 1 to start.\n");
       // Signal Player 1 to start
       sem_post(turn_sems[0]);
