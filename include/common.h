@@ -27,6 +27,8 @@
 #define WIN_COUNT 5
 #define BUFFER_SIZE 256
 #define NAME_LEN 32
+#define POLL_INTERVAL_US 200000
+#define LOG_BUFFER_SIZE 1024
 
 // --- Shared Memory & Semaphores Names ---
 #define SHM_NAME "/mega_ttt_shm"
@@ -52,6 +54,7 @@ typedef struct {
   volatile int game_over;
   volatile int winner_id; // 0 if draw or none yet
   volatile int turn_count;
+  volatile int win_counts[MAX_PLAYERS]; // Total wins for each player
   Player players[MAX_PLAYERS];
 } GameState;
 

@@ -15,6 +15,27 @@ int server_socket = -1;
 int log_pipe[2]; // [0] Read (Logger), [1] Write (Others)
 FILE *log_file = NULL;
 pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
+volatile sig_atomic_t server_running = 1;
+
+// Helper to load scores from file
+void load_scores(GameState *gs) {
+  FILE *fp = fopen("score.txt", "r");
+  if (!fp)
+    return; // No scores yet
+
+  char line[256];
+  while (fgets(line, sizeof(line), fp)) {
+    int pid;
+    // Look for "Winner: Player X"
+    if (sscanf(line, "[%*[^]]] Winner: Player %d", &pid) == 1) {
+      if (pid > 0 && pid <= MAX_PLAYERS) {
+        gs->win_counts[pid - 1]++;
+      }
+    }
+  }
+  fclose(fp);
+  printf("[Server] Scores loaded from score.txt\n");
+}
 
 // Helper to send logs to the logger thread
 void log_msg(const char *format, ...) {
@@ -29,7 +50,10 @@ void log_msg(const char *format, ...) {
   // The logger expects lines? Or just raw bytes.
   // Let's ensure it ends with newline or handle it in logger.
   // Ideally, we write one atomic chunk.
-  write(log_pipe[1], buffer, strlen(buffer));
+  // Ideally, we write one atomic chunk.
+  if (write(log_pipe[1], buffer, strlen(buffer)) == -1) {
+    perror("log_msg write failed");
+  }
 }
 
 // Logger Thread Function
@@ -49,12 +73,14 @@ void *logger_thread(void *arg) {
   }
   printf("[Logger] Thread started. Writing to game_log.txt\n");
 
-  char buffer[1024];
+  char buffer[LOG_BUFFER_SIZE];
   ssize_t n;
   while ((n = read(log_pipe[0], buffer, sizeof(buffer) - 1)) > 0) {
     buffer[n] = '\0';
-    fprintf(log_file, "%s", buffer);
-    fflush(log_file); // Ensure it's written immediately
+    if (log_file) {
+      fprintf(log_file, "%s", buffer);
+      fflush(log_file); // Ensure it's written immediately
+    }
 
     // Also print to stdout for debugging visibility
     // printf("%s", buffer);
@@ -71,7 +97,12 @@ void *scheduler_thread(void *arg) {
 
   while (1) {
     // Wait for a player to finish their turn
-    sem_wait(sem_scheduler);
+    // Wait for a player to finish their turn
+    if (sem_wait(sem_scheduler) == -1) {
+      if (errno != EINTR)
+        perror("sem_wait scheduler");
+      continue;
+    }
 
     pthread_mutex_lock(&game_state->game_mutex);
     if (game_state->game_over) {
@@ -85,7 +116,7 @@ void *scheduler_thread(void *arg) {
       printf("[Scheduler] Game Over detected. Waiting for reset...\n");
       // Wait for Main to reset game_over flag
       while (1) {
-        usleep(100000); // 100ms
+        usleep(POLL_INTERVAL_US / 2); // 100ms
         pthread_mutex_lock(&game_state->game_mutex);
         if (!game_state->game_over) {
           pthread_mutex_unlock(&game_state->game_mutex);
@@ -110,7 +141,9 @@ void *scheduler_thread(void *arg) {
            next_id + 1, next_id);
     log_msg("[Scheduler] Player %d (%d) -> Player %d (%d)\n", current_id + 1,
             current_id, next_id + 1, next_id);
-    sem_post(turn_sems[next_id]);
+    if (sem_post(turn_sems[next_id]) == -1) {
+      perror("sem_post turn_sems");
+    }
   }
   return NULL;
 }
@@ -118,12 +151,15 @@ void *scheduler_thread(void *arg) {
 // Cleanup function
 void cleanup() {
   printf("\n[Server] Cleaning up resources...\n");
+
+  // Close log pipe
+  close(log_pipe[0]);
+  close(log_pipe[1]);
+
+  // Unlink socket
+  unlink(SOCKET_PATH);
   if (game_state)
     munmap(game_state, sizeof(GameState));
-  if (shm_fd != -1)
-    close(shm_fd);
-  shm_unlink(SHM_NAME);
-
   if (shm_fd != -1)
     close(shm_fd);
   shm_unlink(SHM_NAME);
@@ -149,9 +185,13 @@ void cleanup() {
   // Kill all children if necessary (handled by OS usually on group exit)
 }
 
+// Signal Handler
 void handle_signal(int sig) {
-  cleanup();
-  exit(0);
+  printf(
+      "\n[Server] Shutdown Signal Received. Initiating graceful shutdown...\n");
+  server_running = 0;
+  // Interrupt any blocking calls if necessary (though SIGINT usually interrupts
+  // accept/read)
 }
 
 void handle_sigchld(int sig) {
@@ -183,8 +223,9 @@ void handle_client(int player_id, int client_sock) {
         pthread_mutex_lock(&gs->game_mutex);
         int go_debug = gs->game_over;
         pthread_mutex_unlock(&gs->game_mutex);
-        printf("[DEBUG] Player %d acquired semaphore (My Turn). game_over=%d\n",
-               player_id + 1, go_debug);
+        // printf("[DEBUG] Player %d acquired semaphore (My Turn).
+        // game_over=%d\n",
+        //        player_id + 1, go_debug);
         break;
       }
 
@@ -200,8 +241,8 @@ void handle_client(int player_id, int client_sock) {
       }
 
       if (current_turn_count > last_turn_count) {
-        printf("[DEBUG] Player %d sending spectator update (Turn %d > %d)\n",
-               player_id + 1, current_turn_count, last_turn_count);
+        // printf("[DEBUG] Player %d sending spectator update (Turn %d > %d)\n",
+        //        player_id + 1, current_turn_count, last_turn_count);
         last_turn_count = current_turn_count;
 
         // Send Board State (Spectator View)
@@ -222,11 +263,14 @@ void handle_client(int player_id, int client_sock) {
           offset += sprintf(board_str + offset, "\n");
         }
         offset += sprintf(board_str + offset, "END\n");
-        send(client_sock, board_str, strlen(board_str), 0);
+        if (send(client_sock, board_str, strlen(board_str), 0) == -1) {
+          perror("send board_str");
+        }
       }
 
       // Sleep a bit to avoid CPU spin
-      usleep(200000); // 200ms
+      // Sleep a bit to avoid CPU spin
+      usleep(POLL_INTERVAL_US);
     }
 
     // --- MY TURN or GAME OVER ---
@@ -336,7 +380,7 @@ void handle_client(int player_id, int client_sock) {
         gs->turn_count++;
         // removed last_turn_count update so I get the spectator update showing
         // my own move
-        printf("[DEBUG] Player %d placed at %d, %d\n", me->id, row, col);
+        // printf("[DEBUG] Player %d placed at %d, %d\n", me->id, row, col);
         log_msg("[Gameplay] Player %d placed '%c' at (%d, %d)\n", me->id,
                 me->symbol, row, col);
 
@@ -354,8 +398,10 @@ void handle_client(int player_id, int client_sock) {
         // gs->current_player_index = (gs->current_player_index + 1) %
         // gs->player_count; // REMOVED: Scheduler does this
 
-        printf("[DEBUG] Player %d finished. Signaling Scheduler.\n", me->id);
-        sem_post(sem_scheduler); // Signal Scheduler
+        // printf("[DEBUG] Player %d finished. Signaling Scheduler.\n", me->id);
+        // printf("[DEBUG] Player %d finished. Signaling Scheduler.\n", me->id);
+        if (sem_post(sem_scheduler) == -1)
+          perror("sem_post scheduler"); // Signal Scheduler
 
       } else {
         // Invalid move, signal SAME player to try again
@@ -416,7 +462,12 @@ int main(int argc, char *argv[]) {
     ERR_EXIT("mmap");
 
   // Initialize Game State
+  // Initialize Game State
   init_game_state(game_state);
+  // Reset win counts
+  memset((void *)game_state->win_counts, 0, sizeof(game_state->win_counts));
+  load_scores(game_state); // Load historical data
+
   game_state->player_count = players_needed;
 
   if (sem_scheduler == SEM_FAILED)
@@ -475,7 +526,7 @@ int main(int argc, char *argv[]) {
   int connected_count = 0;
   char symbols[] = {'X', 'O', 'A', 'B', 'C'};
 
-  while (connected_count < players_needed) {
+  while (connected_count < players_needed && server_running) {
     struct sockaddr_in client_addr;
     socklen_t addrlen = sizeof(client_addr);
     int new_socket =
@@ -532,14 +583,22 @@ int main(int argc, char *argv[]) {
   sem_post(turn_sems[0]);
 
   // Parent Process Monitor Loop
-  // Could spawn a thread here for logging or monitoring
-  while (1) {
+  while (server_running) {
     sleep(1);
+    if (!server_running)
+      break;
     pthread_mutex_lock(&game_state->game_mutex);
     if (game_state->game_over) {
       // Capture state atomically while holding lock
       int winner = game_state->winner_id;
       int turns = game_state->turn_count;
+      int total_wins = 0;
+
+      if (winner > 0 && winner <= game_state->player_count) {
+        game_state->win_counts[winner - 1]++; // Update in-memory score
+        total_wins = game_state->win_counts[winner - 1];
+      }
+
       char winner_symbol = '?';
       if (winner > 0 && winner <= game_state->player_count) {
         winner_symbol = game_state->players[winner - 1].symbol;
@@ -558,8 +617,10 @@ int main(int argc, char *argv[]) {
         if (winner == 0) {
           fprintf(fp, "[%s] Draw! Total Turns: %d\n", time_str, turns);
         } else {
-          fprintf(fp, "[%s] Winner: Player %d (%c) | Total Turns: %d\n",
-                  time_str, winner, winner_symbol, turns);
+          fprintf(fp,
+                  "[%s] Winner: Player %d (%c) | Total Turns: %d | Total Wins: "
+                  "%d\n",
+                  time_str, winner, winner_symbol, turns, total_wins);
         }
         fclose(fp);
         printf("[Main] Score saved.\n");
@@ -586,6 +647,22 @@ int main(int argc, char *argv[]) {
     }
     pthread_mutex_unlock(&game_state->game_mutex);
   }
+
+  // Graceful Exit
+  if (game_state) {
+    printf("\n[Server] Final Leaderboard:\n");
+    printf("--------------------------------\n");
+    for (int i = 0; i < game_state->player_count; i++) {
+      printf("Player %d: %d Wins\n", i + 1, game_state->win_counts[i]);
+    }
+    printf("--------------------------------\n");
+  }
+
+  // Cancel and Join Threads
+  pthread_cancel(scheduler_tid);
+  pthread_join(scheduler_tid, NULL);
+  pthread_cancel(logger_tid);
+  pthread_join(logger_tid, NULL);
 
   cleanup();
   return 0;
