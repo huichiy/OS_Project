@@ -470,9 +470,6 @@ int main(int argc, char *argv[]) {
 
   game_state->player_count = players_needed;
 
-  if (sem_scheduler == SEM_FAILED)
-    ERR_EXIT("sem_open scheduler");
-
   // 2. Setup Mutex (Process Shared)
   // sem_unlink(SEM_MUTEX_NAME);
   // mutex = sem_open(SEM_MUTEX_NAME, O_CREAT, 0666, 1);

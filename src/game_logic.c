@@ -1,7 +1,7 @@
 #include "../include/common.h"
 
 void init_game_state(GameState *gs) {
-  memset(gs->board, ' ', sizeof(gs->board));
+  memset((void *)gs->board, ' ', sizeof(gs->board));
   gs->player_count = 0;
   gs->current_player_index = 0;
   gs->game_over = 0;
