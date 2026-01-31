@@ -210,7 +210,7 @@ void handle_client(int player_id, int client_sock) {
 
   char buffer[BUFFER_SIZE];
 
-  int last_turn_count = gs->turn_count;
+  int last_turn_count = -1; // Start at -1 to ensure initial board is shown
 
   while (1) {
     // --- POLLING LOOP FOR TURN OR UPDATES ---
