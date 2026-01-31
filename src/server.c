@@ -309,15 +309,12 @@ void handle_client(int player_id, int client_sock) {
       printf("[DEBUG] Player %d sent GAME_OVER.\n", me->id);
 
       // Propagate signal -> To SCHEDULER (which will stop) or next player?
-      // During Game Over processing, we might want to manually wake up everyone
-      // to exit. But for this logic, let's signal scheduler one last time so it
-      // sees game over.
-      int next_p = (player_id + 1) % gs->player_count;
-      printf("[DEBUG] Player %d propagating signal to Scheduler for Game "
-             "Over...\n",
+      // During Game Over processing, we DO NOT need to signal scheduler again.
+      // The winner already did (or the turn-finisher).
+      // Excess signals cause the scheduler to skip turns in the next game.
+      // sem_post(sem_scheduler); // REMOVED
+      printf("[DEBUG] Player %d Game Over processed. Waiting for reset.\n",
              me->id);
-      sem_post(sem_scheduler);
-      printf("[DEBUG] Player %d propagated signal. Exiting loop.\n", me->id);
       printf("[DEBUG] Player %d propagated signal. Exiting loop.\n", me->id);
 
       // Wait for Game Reset
