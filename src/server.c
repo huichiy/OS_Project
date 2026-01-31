@@ -323,8 +323,10 @@ void handle_client(int player_id, int client_sock) {
     // Receive Move
     memset(buffer, 0, BUFFER_SIZE);
     int bytes = recv(client_sock, buffer, BUFFER_SIZE, 0);
-    if (bytes <= 0)
+    if (bytes <= 0) {
+      log_msg("[Connection] Player %d disconnected.\n", me->id);
       break; // Client disconnected
+    }
 
     int row, col;
     if (sscanf(buffer, "%d %d", &row, &col) == 2) {
@@ -482,6 +484,8 @@ int main(int argc, char *argv[]) {
       ERR_EXIT("accept");
 
     printf("[Server] Player %d connected!\n", connected_count + 1);
+    log_msg("[Connection] Player %d connected from %s\n", connected_count + 1,
+            "local");
 
     pthread_mutex_lock(&game_state->game_mutex);
     game_state->players[connected_count].id = connected_count + 1; // 1-based ID
@@ -505,6 +509,7 @@ int main(int argc, char *argv[]) {
   }
 
   printf("[Server] All players connected! Starting game...\n");
+  log_msg("[Game] All players connected. Game Starting.\n");
 
   // Start the Logger Thread
   pthread_t logger_tid;
@@ -532,21 +537,20 @@ int main(int argc, char *argv[]) {
     sleep(1);
     pthread_mutex_lock(&game_state->game_mutex);
     if (game_state->game_over) {
+      // Capture state atomically while holding lock
+      int winner = game_state->winner_id;
+      int turns = game_state->turn_count;
+      char winner_symbol = '?';
+      if (winner > 0 && winner <= game_state->player_count) {
+        winner_symbol = game_state->players[winner - 1].symbol;
+      }
       pthread_mutex_unlock(&game_state->game_mutex);
+
       printf("[Main] Game Over detected. Writing to score.txt...\n");
+      log_msg("[Game] Game Over. Winner: %d\n", winner);
 
       FILE *fp = fopen("score.txt", "a");
       if (fp) {
-        /*
-         *  Get winner info.
-         *  Note: accessing shared memory here without mutex is technically
-         * race-prone but game_over flag is set, so state should be stable
-         * (stuck players not-withstanding). For strict correctness, we should
-         * copy needed values while holding mutex above. But let's just grab
-         * them.
-         */
-        int winner = game_state->winner_id;
-        int turns = game_state->turn_count;
         time_t now = time(NULL);
         char *time_str = ctime(&now);
         time_str[strlen(time_str) - 1] = '\0'; // Remove newline
@@ -554,14 +558,8 @@ int main(int argc, char *argv[]) {
         if (winner == 0) {
           fprintf(fp, "[%s] Draw! Total Turns: %d\n", time_str, turns);
         } else {
-          // Find symbol
-          char sym = '?';
-          // Simple lookup in players array. ID is 1-based, index is ID-1
-          if (winner > 0 && winner <= game_state->player_count) {
-            sym = game_state->players[winner - 1].symbol;
-          }
           fprintf(fp, "[%s] Winner: Player %d (%c) | Total Turns: %d\n",
-                  time_str, winner, sym, turns);
+                  time_str, winner, winner_symbol, turns);
         }
         fclose(fp);
         printf("[Main] Score saved.\n");

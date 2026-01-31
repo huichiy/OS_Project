@@ -1,2 +1,0 @@
-[Gameplay] Player 1 placed 'X' at (0, 0)
-[Scheduler] Player 1 (0) -> Player 2 (1)
